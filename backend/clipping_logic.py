@@ -6,6 +6,10 @@ Combines all extraction modules to create a formatted document.
 
 import sys
 import os
+import html
+import tempfile
+import uuid
+from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlunparse, parse_qs
 
@@ -18,39 +22,15 @@ import logo_extraction
 import output_generation
 import find_first_and_last_sentences
 
+# Import utilities
+from url_utils import normalize_image_url
+from constants import FileConfig, ContentConfig
+from logger import get_logger
 
-def _normalize_image_url(url: str) -> str:
-    """
-    Normalize an image URL for duplicate detection.
-    
-    Removes query parameters, fragments, and normalizes the URL to help
-    identify duplicate images that might have different URLs but point to
-    the same image (e.g., with tracking parameters, size parameters, etc.).
-    
-    Args:
-        url: Image URL to normalize
-        
-    Returns:
-        str: Normalized URL (base URL without query params or fragments)
-    """
-    if not url:
-        return url
-    
-    try:
-        parsed = urlparse(url)
-        # Reconstruct URL without query and fragment
-        normalized = urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            '',  # Remove query
-            ''   # Remove fragment
-        ))
-        return normalized
-    except Exception:
-        # If parsing fails, return original
-        return url
+logger = get_logger(__name__)
+
+
+# Note: normalize_image_url removed - now using normalize_image_url from url_utils
 
 
 def process_url_to_file(url: str, filetype: str = 'html', output_file: str = None, keywords: list = None, include_first_paragraph: bool = False, use_ai_extraction: bool = True) -> str:
@@ -80,56 +60,60 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
     Returns:
         str: Path to the generated output file
     """
-    print("=" * 80)
-    print("Step 1: Scraping webpage with ad-blocker...")
-    print("=" * 80)
-    
+    logger.info("=" * 80)
+    logger.info("Step 1: Scraping webpage with ad-blocker...")
+    logger.info("=" * 80)
+
     # Step 1: Scrape the page
     html_content = site_preprocessing.scrape_page(url, wait_time=1)
-    
+
     if not html_content:
         raise Exception("Failed to scrape the page")
-    
-    # Save original HTML for reference
-    original_html_file = "scraped_page.html"
-    with open(original_html_file, 'w', encoding='utf-8') as f:
+
+    # SECURITY FIX: Use temp directory for file writes
+    temp_dir = Path(tempfile.gettempdir()) / FileConfig.TEMP_DIR_NAME
+    temp_dir.mkdir(exist_ok=True, parents=True)
+
+    # Save original HTML for reference with unique filename
+    original_html_file = temp_dir / f"scraped_page_{uuid.uuid4().hex[:8]}.html"
+    with open(original_html_file, 'w', encoding=FileConfig.DEFAULT_ENCODING) as f:
         f.write(html_content)
-    print(f"✓ Original HTML saved to: {original_html_file}")
-    
-    print("\n" + "=" * 80)
-    print("Step 2: Extracting logo...")
-    print("=" * 80)
-    
+    logger.info(f"✓ Original HTML saved to: {original_html_file}")
+
+    logger.info("=" * 80)
+    logger.info("Step 2: Extracting logo...")
+    logger.info("=" * 80)
+
     # Step 2: Extract logo
     root_domain = logo_extraction.get_root_domain(url)
     logo_result = logo_extraction.extract_logo(html_content, root_domain, base_url=url)
-    
+
     if logo_result['element']:
-        print(f"✓ Logo found: {logo_result['url'] or logo_result['src']}")
+        logger.info(f"✓ Logo found: {logo_result['url'] or logo_result['src']}")
     else:
-        print("⚠ No logo found")
-    
-    print("\n" + "=" * 80)
-    print("Step 3: Extracting headers (title and subtitle)...")
-    print("=" * 80)
-    
+        logger.info("⚠ No logo found")
+
+    logger.info("=" * 80)
+    logger.info("Step 3: Extracting headers (title and subtitle)...")
+    logger.info("=" * 80)
+
     # Step 3: Extract headers
     headers = header_extraction.extract_headers(html_content)
-    
+
     if headers['title']:
-        print(f"✓ Title found: {headers['title']['text'][:80]}...")
+        logger.info(f"✓ Title found: {headers['title']['text'][:80]}...")
     else:
-        print("⚠ No title found")
-    
+        logger.info("⚠ No title found")
+
     if headers['subtitle']:
-        print(f"✓ Subtitle found: {headers['subtitle']['text'][:80]}...")
+        logger.info(f"✓ Subtitle found: {headers['subtitle']['text'][:80]}...")
     else:
-        print("⚠ No subtitle found")
-    
-    print("\n" + "=" * 80)
-    print("Step 3.5: Finding image below title...")
-    print("=" * 80)
-    
+        logger.info("⚠ No subtitle found")
+
+    logger.info("=" * 80)
+    logger.info("Step 3.5: Finding image below title...")
+    logger.info("=" * 80)
+
     # Step 3.5: Find image below title
     title_image = positional_extraction.find_image_below_title(
         html_content,
@@ -137,17 +121,17 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
         base_url=url,
         max_distance=5
     )
-    
+
     if title_image:
         img_url = title_image if isinstance(title_image, str) else title_image.get('url')
         if img_url:
-            print(f"✓ Title image found: {img_url}")
+            logger.info(f"✓ Title image found: {img_url}")
     else:
-        print("⚠ No image found below title")
-    
-    print("\n" + "=" * 80)
-    print("Step 3.75: Finding first and last contentful sentences...")
-    print("=" * 80)
+        logger.info("⚠ No image found below title")
+
+    logger.info("=" * 80)
+    logger.info("Step 3.75: Finding first and last contentful sentences...")
+    logger.info("=" * 80)
 
     # Step 3.75: Extract first and last sentences using Firecrawl + OpenAI
     # This helps identify the precise content boundaries
@@ -163,25 +147,25 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
         if sentence_result['success']:
             first_sentence = sentence_result['first_sentence']
             last_sentence = sentence_result['last_sentence']
-            print(f"✓ Successfully extracted content boundaries")
+            logger.info("✓ Successfully extracted content boundaries")
         else:
-            print(f"⚠ Could not extract sentences: {sentence_result['error']}")
-            print("  Will use heuristic content extraction instead")
+            logger.info(f"⚠ Could not extract sentences: {sentence_result['error']}")
+            logger.info("  Will use heuristic content extraction instead")
     else:
-        print("  AI extraction disabled - using heuristic content extraction")
+        logger.info("  AI extraction disabled - using heuristic content extraction")
 
-    print("\n" + "=" * 80)
-    print("Step 4: Extracting main content...")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("Step 4: Extracting main content...")
+    logger.info("=" * 80)
 
     # Step 4: Extract main content
     if keywords:
-        print(f"  Filtering paragraphs by keywords: {', '.join(keywords)}")
+        logger.info(f"  Filtering paragraphs by keywords: {', '.join(keywords)}")
         if include_first_paragraph:
-            print("  Always including first paragraph (even if it doesn't match keywords)")
+            logger.info("  Always including first paragraph (even if it doesn't match keywords)")
 
     if first_sentence and last_sentence:
-        print("  Using AI-identified content boundaries for precise extraction")
+        logger.info("  Using AI-identified content boundaries for precise extraction")
 
     extracted_content_html = content_extraction.extract_main_content(
         html_content,
@@ -194,13 +178,13 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
         # Count paragraphs after filtering
         extracted_soup = BeautifulSoup(extracted_content_html, 'html.parser')
         para_count = len(extracted_soup.find_all('p'))
-        print(f"✓ Main content extracted ({para_count} paragraphs after keyword filtering)")
+        logger.info(f"✓ Main content extracted ({para_count} paragraphs after keyword filtering)")
     else:
-        print("✓ Main content extracted")
-    
-    print("\n" + "=" * 80)
-    print("Step 5: Validating subtitle position...")
-    print("=" * 80)
+        logger.info("✓ Main content extracted")
+
+    logger.info("=" * 80)
+    logger.info("Step 5: Validating subtitle position...")
+    logger.info("=" * 80)
     
     # Step 5: Validate subtitle position
     subtitle_validation = positional_extraction.validate_subtitle_position(
@@ -211,14 +195,14 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
     
     include_subtitle = subtitle_validation['is_valid']
     if include_subtitle:
-        print("✓ Subtitle is correctly positioned - will be included")
+        logger.info("✓ Subtitle is correctly positioned - will be included")
     else:
-        print(f"⚠ Subtitle validation failed: {subtitle_validation['reason']}")
-        print("  Subtitle will not be included")
-    
-    print("\n" + "=" * 80)
-    print("Step 6: Finding images around paragraphs...")
-    print("=" * 80)
+        logger.info(f"⚠ Subtitle validation failed: {subtitle_validation['reason']}")
+        logger.info("  Subtitle will not be included")
+
+    logger.info("=" * 80)
+    logger.info("Step 6: Finding images around paragraphs...")
+    logger.info("=" * 80)
     
     # Step 6: Find images around paragraphs
     extracted_soup = BeautifulSoup(extracted_content_html, 'html.parser')
@@ -234,7 +218,7 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
     if title_image:
         img_url = title_image if isinstance(title_image, str) else title_image.get('url')
         if img_url:
-            normalized_url = _normalize_image_url(img_url)
+            normalized_url = normalize_image_url(img_url)
             seen_image_urls.add(img_url)
             seen_normalized_urls.add(normalized_url)
     
@@ -255,7 +239,7 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
             # Check image above (now just a URL string)
             if image_result['image_above']:
                 img_url = image_result['image_above']
-                normalized_url = _normalize_image_url(img_url)
+                normalized_url = normalize_image_url(img_url)
                 # Check against normalized URLs to catch duplicates with different query params
                 if normalized_url not in seen_normalized_urls:
                     seen_image_urls.add(img_url)
@@ -265,7 +249,7 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
             # Check image below (now just a URL string)
             if image_result['image_below']:
                 img_url = image_result['image_below']
-                normalized_url = _normalize_image_url(img_url)
+                normalized_url = normalize_image_url(img_url)
                 # Check against normalized URLs to catch duplicates with different query params
                 if normalized_url not in seen_normalized_urls:
                     seen_image_urls.add(img_url)
@@ -275,11 +259,11 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
             if images_found:
                 paragraph_image_map[i] = images_found
     
-    print(f"✓ Found {len(seen_normalized_urls)} unique images (including title image)")
-    
-    print("\n" + "=" * 80)
-    print("Step 7: Building final HTML document...")
-    print("=" * 80)
+    logger.info(f"✓ Found {len(seen_normalized_urls)} unique images (including title image)")
+
+    logger.info("=" * 80)
+    logger.info("Step 7: Building final HTML document...")
+    logger.info("=" * 80)
     
     # Step 7: Build final HTML document
     final_html = build_final_html(
@@ -292,15 +276,15 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
         seen_image_urls
     )
     
-    # Save intermediate HTML file
-    intermediate_html_file = "final_content.html"
-    with open(intermediate_html_file, 'w', encoding='utf-8') as f:
+    # SECURITY FIX: Save intermediate HTML file to temp directory with unique filename
+    intermediate_html_file = temp_dir / f"final_content_{uuid.uuid4().hex[:8]}.html"
+    with open(intermediate_html_file, 'w', encoding=FileConfig.DEFAULT_ENCODING) as f:
         f.write(final_html)
-    print(f"✓ Final HTML saved to: {intermediate_html_file}")
-    
-    print("\n" + "=" * 80)
-    print(f"Step 8: Converting to {filetype.upper()} format...")
-    print("=" * 80)
+    logger.info(f"✓ Final HTML saved to: {intermediate_html_file}")
+
+    logger.info("=" * 80)
+    logger.info(f"Step 8: Converting to {filetype.upper()} format...")
+    logger.info("=" * 80)
     
     # Step 8: Convert to requested format
     if filetype.lower() == 'html':
@@ -343,8 +327,8 @@ def process_url_to_file(url: str, filetype: str = 'html', output_file: str = Non
             # Text format (markdown)
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(converted_content)
-        
-        print(f"✓ Output saved to: {output_file}")
+
+        logger.info(f"✓ Output saved to: {output_file}")
         return output_file
 
 
@@ -439,10 +423,10 @@ def build_final_html(logo_result: dict, headers: dict, include_subtitle: bool,
         html_parts.append('    <div class="logo-container">')
         logo_url = logo_result.get('url') or logo_result.get('src')
         if logo_url:
-            # Escape URL for HTML
-            logo_url_escaped = logo_url.replace('&', '&amp;')
+            # SECURITY: Properly escape URL and alt text for HTML
+            logo_url_escaped = html.escape(logo_url, quote=True)
             img_alt = logo_result.get('alt', '') or 'Logo'
-            img_alt_escaped = img_alt.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+            img_alt_escaped = html.escape(img_alt, quote=True)
             html_parts.append(f'        <img src="{logo_url_escaped}" alt="{img_alt_escaped}" />')
         elif logo_result.get('element') and hasattr(logo_result['element'], 'name') and logo_result['element'].name == 'svg':
             # Handle inline SVG
@@ -466,21 +450,22 @@ def build_final_html(logo_result: dict, headers: dict, include_subtitle: bool,
             style = title_info.get('style', '')
             title_id = title_info.get('id', '')
             
-            # Build attributes
+            # Build attributes with proper escaping
             attrs = []
             if classes:
                 class_str = ' '.join(classes)
-                class_str_escaped = class_str.replace('&', '&amp;').replace('"', '&quot;')
+                class_str_escaped = html.escape(class_str, quote=True)
                 attrs.append(f'class="{class_str_escaped}"')
             if style:
-                style_escaped = style.replace('&', '&amp;').replace('"', '&quot;')
+                style_escaped = html.escape(style, quote=True)
                 attrs.append(f'style="{style_escaped}"')
             if title_id:
-                id_escaped = title_id.replace('&', '&amp;').replace('"', '&quot;')
+                id_escaped = html.escape(title_id, quote=True)
                 attrs.append(f'id="{id_escaped}"')
-            
+
             attr_str = ' ' + ' '.join(attrs) if attrs else ''
-            title_text_escaped = title_info['text'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            # SECURITY: Properly escape title text for HTML
+            title_text_escaped = html.escape(title_info['text'], quote=False)
             html_parts.append(f'    <{tag}{attr_str}>{title_text_escaped}</{tag}>')
     
     # Add title image if found (after title, before subtitle)
@@ -489,12 +474,13 @@ def build_final_html(logo_result: dict, headers: dict, include_subtitle: bool,
     if title_image:
         img_url = title_image if isinstance(title_image, str) else title_image.get('url')
         if img_url:
-            normalized_url = _normalize_image_url(img_url)
+            normalized_url = normalize_image_url(img_url)
             # Check against normalized URLs to catch duplicates with different query params
             if normalized_url not in added_normalized_urls:
                 added_image_urls.add(img_url)
                 added_normalized_urls.add(normalized_url)
-                img_url_escaped = img_url.replace('&', '&amp;')
+                # SECURITY: Properly escape URL for HTML
+                img_url_escaped = html.escape(img_url, quote=True)
                 # Use consistent image sizing (width set via CSS, height auto for aspect ratio)
                 # Alt text will be empty - output_generation will handle deduplication and processing
                 html_parts.append(f'    <img src="{img_url_escaped}" alt="" class="content-image" />')
@@ -517,21 +503,22 @@ def build_final_html(logo_result: dict, headers: dict, include_subtitle: bool,
             if 'subtitle' not in ' '.join(classes).lower():
                 classes.append('subtitle')
             
-            # Build attributes
+            # Build attributes with proper escaping
             attrs = []
             if classes:
                 class_str = ' '.join(classes)
-                class_str_escaped = class_str.replace('&', '&amp;').replace('"', '&quot;')
+                class_str_escaped = html.escape(class_str, quote=True)
                 attrs.append(f'class="{class_str_escaped}"')
             if style:
-                style_escaped = style.replace('&', '&amp;').replace('"', '&quot;')
+                style_escaped = html.escape(style, quote=True)
                 attrs.append(f'style="{style_escaped}"')
             if subtitle_id:
-                id_escaped = subtitle_id.replace('&', '&amp;').replace('"', '&quot;')
+                id_escaped = html.escape(subtitle_id, quote=True)
                 attrs.append(f'id="{id_escaped}"')
-            
+
             attr_str = ' ' + ' '.join(attrs) if attrs else ''
-            subtitle_text_escaped = subtitle_info['text'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            # SECURITY: Properly escape subtitle text for HTML
+            subtitle_text_escaped = html.escape(subtitle_info['text'], quote=False)
             html_parts.append(f'    <{tag}{attr_str}>{subtitle_text_escaped}</{tag}>')
     
     # Process content and insert images
@@ -548,13 +535,14 @@ def build_final_html(logo_result: dict, headers: dict, include_subtitle: bool,
         if i in paragraph_image_map:
             for position, img_url in paragraph_image_map[i]:
                 if position == 'above' and img_url:
-                    normalized_url = _normalize_image_url(img_url)
+                    normalized_url = normalize_image_url(img_url)
                     # Only add if not already added (to prevent duplicates)
                     # Check against normalized URLs to catch duplicates with different query params
                     if normalized_url not in added_normalized_urls:
                         added_image_urls.add(img_url)
                         added_normalized_urls.add(normalized_url)
-                        img_url_escaped = img_url.replace('&', '&amp;')
+                        # SECURITY: Properly escape URL for HTML
+                        img_url_escaped = html.escape(img_url, quote=True)
                         # Use consistent image sizing (width set via CSS, height auto for aspect ratio)
                         # Alt text will be empty - output_generation will handle deduplication and processing
                         html_parts.append(f'        <img src="{img_url_escaped}" alt="" class="content-image" />')
@@ -567,13 +555,14 @@ def build_final_html(logo_result: dict, headers: dict, include_subtitle: bool,
         if i in paragraph_image_map:
             for position, img_url in paragraph_image_map[i]:
                 if position == 'below' and img_url:
-                    normalized_url = _normalize_image_url(img_url)
+                    normalized_url = normalize_image_url(img_url)
                     # Only add if not already added (to prevent duplicates)
                     # Check against normalized URLs to catch duplicates with different query params
                     if normalized_url not in added_normalized_urls:
                         added_image_urls.add(img_url)
                         added_normalized_urls.add(normalized_url)
-                        img_url_escaped = img_url.replace('&', '&amp;')
+                        # SECURITY: Properly escape URL for HTML
+                        img_url_escaped = html.escape(img_url, quote=True)
                         # Use consistent image sizing (width set via CSS, height auto for aspect ratio)
                         # Alt text will be empty - output_generation will handle deduplication and processing
                         html_parts.append(f'        <img src="{img_url_escaped}" alt="" class="content-image" />')

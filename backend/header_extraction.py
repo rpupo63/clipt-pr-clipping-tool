@@ -7,6 +7,11 @@ from bs4 import BeautifulSoup
 import re
 import json
 
+# Import utilities
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def _extract_formatting_info(element):
     """
@@ -435,52 +440,52 @@ def main():
         url = sys.argv[1]
     else:
         url = "https://www.vogue.com/article/thin-little-scarf-fall-winter-trend"
-        print(f"No URL provided, using default: {url}")
-        print(f"Usage: python {sys.argv[0]} <url>")
-    
-    print("=" * 80)
-    print("Step 1: Scraping webpage with ad-blocker...")
-    print("=" * 80)
-    
+        logger.info(f"No URL provided, using default: {url}")
+        logger.info(f"Usage: python {sys.argv[0]} <url>")
+
+    logger.info("=" * 80)
+    logger.info("Step 1: Scraping webpage with ad-blocker...")
+    logger.info("=" * 80)
+
     # Scrape the page
     html_content = site_preprocessing.scrape_page(url, wait_time=1)
-    
+
     if not html_content:
-        print("Failed to scrape the page", file=sys.stderr)
+        logger.error("Failed to scrape the page")
         sys.exit(1)
-    
-    print("\n" + "=" * 80)
-    print("Step 2: Extracting headers from HTML...")
-    print("=" * 80)
-    
+
+    logger.info("=" * 80)
+    logger.info("Step 2: Extracting headers from HTML...")
+    logger.info("=" * 80)
+
     # Extract headers
     headers = extract_headers(html_content)
-    
-    print("\n" + "=" * 80)
-    print("RESULTS:")
-    print("=" * 80)
-    
+
+    logger.info("=" * 80)
+    logger.info("RESULTS:")
+    logger.info("=" * 80)
+
     if headers['title']:
-        print("\n✓ Title found:")
-        print(f"  Text: {headers['title']['text']}")
-        print(f"  Tag: {headers['title']['tag']}")
-        print(f"  Classes: {headers['title']['classes']}")
-        print(f"  ID: {headers['title']['id']}")
+        logger.info("✓ Title found:")
+        logger.info(f"  Text: {headers['title']['text']}")
+        logger.info(f"  Tag: {headers['title']['tag']}")
+        logger.info(f"  Classes: {headers['title']['classes']}")
+        logger.info(f"  ID: {headers['title']['id']}")
         if headers['title']['formatted_html']:
-            print(f"  HTML: {headers['title']['formatted_html'][:200]}...")
+            logger.info(f"  HTML: {headers['title']['formatted_html'][:200]}...")
     else:
-        print("\n✗ No title found")
-    
+        logger.info("✗ No title found")
+
     if headers['subtitle']:
-        print("\n✓ Subtitle found:")
-        print(f"  Text: {headers['subtitle']['text']}")
-        print(f"  Tag: {headers['subtitle']['tag']}")
-        print(f"  Classes: {headers['subtitle']['classes']}")
-        print(f"  ID: {headers['subtitle']['id']}")
+        logger.info("✓ Subtitle found:")
+        logger.info(f"  Text: {headers['subtitle']['text']}")
+        logger.info(f"  Tag: {headers['subtitle']['tag']}")
+        logger.info(f"  Classes: {headers['subtitle']['classes']}")
+        logger.info(f"  ID: {headers['subtitle']['id']}")
         if headers['subtitle']['formatted_html']:
-            print(f"  HTML: {headers['subtitle']['formatted_html'][:200]}...")
+            logger.info(f"  HTML: {headers['subtitle']['formatted_html'][:200]}...")
     else:
-        print("\n✗ No subtitle found")
+        logger.info("✗ No subtitle found")
     
     return headers
 

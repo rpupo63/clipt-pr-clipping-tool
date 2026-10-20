@@ -3,14 +3,15 @@ Functions to extract first and last contentful sentences from web articles.
 Uses Firecrawl for web scraping and OpenAI for intelligent content extraction.
 """
 
-import os
 from typing import Dict, Optional
-from dotenv import load_dotenv
 from firecrawl import FirecrawlApp
 from openai import OpenAI
 
-# Load environment variables from .env file
-load_dotenv()
+# Import utilities
+from config import Config
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def scrape_url_to_markdown(url: str) -> Dict[str, str]:
@@ -30,17 +31,24 @@ def scrape_url_to_markdown(url: str) -> Dict[str, str]:
         ValueError: If FIRECRAWL_API_KEY is not set in environment
         Exception: If scraping fails
     """
-    # Get API key from environment
-    api_key = os.getenv('FIRECRAWL_API_KEY')
+    # Get API key from config
+    api_key = Config.get_firecrawl_key()
     if not api_key:
-        raise ValueError("FIRECRAWL_API_KEY not found in environment variables. Please add it to your .env file.")
+        raise ValueError(
+            "FIRECRAWL_API_KEY not found in environment variables. "
+            "Please add it to your .env file."
+        )
 
     # Initialize Firecrawl
     firecrawl = FirecrawlApp(api_key=api_key)
 
     try:
+        logger.info(f"Scraping URL with Firecrawl: {url}")
         # Scrape the URL and get markdown
         result = firecrawl.scrape_url(url, params={'formats': ['markdown']})
+
+        markdown_length = len(result.get('markdown', ''))
+        logger.debug(f"Retrieved {markdown_length} characters of markdown")
 
         return {
             'markdown': result.get('markdown', ''),
@@ -48,6 +56,7 @@ def scrape_url_to_markdown(url: str) -> Dict[str, str]:
             'title': result.get('metadata', {}).get('title', '')
         }
     except Exception as e:
+        logger.error(f"Failed to scrape URL with Firecrawl: {e}", exc_info=True)
         raise Exception(f"Failed to scrape URL with Firecrawl: {str(e)}")
 
 
@@ -67,10 +76,13 @@ def extract_first_and_last_sentences(markdown_content: str) -> Dict[str, str]:
         ValueError: If OPENAI_API_KEY is not set in environment
         Exception: If OpenAI API call fails
     """
-    # Get API key from environment
-    api_key = os.getenv('OPENAI_API_KEY')
+    # Get API key from config
+    api_key = Config.get_openai_key()
     if not api_key:
-        raise ValueError("OPENAI_API_KEY not found in environment variables. Please add it to your .env file.")
+        raise ValueError(
+            "OPENAI_API_KEY not found in environment variables. "
+            "Please add it to your .env file."
+        )
 
     # Initialize OpenAI client
     client = OpenAI(api_key=api_key)
@@ -88,6 +100,7 @@ Please respond in JSON format with the following structure:
 }}"""
 
     try:
+        logger.info("Extracting sentences with OpenAI")
         # Call OpenAI API
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -109,11 +122,14 @@ Please respond in JSON format with the following structure:
         import json
         result = json.loads(response.choices[0].message.content)
 
+        logger.debug(f"Extracted sentences successfully")
+
         return {
             'first_sentence': result.get('first_sentence', ''),
             'last_sentence': result.get('last_sentence', '')
         }
     except Exception as e:
+        logger.error(f"Failed to extract sentences with OpenAI: {e}", exc_info=True)
         raise Exception(f"Failed to extract sentences with OpenAI: {str(e)}")
 
 
@@ -188,7 +204,7 @@ def find_first_and_last_sentences_from_url(url: str, use_firecrawl: bool = True)
 
     try:
         # Step 1: Scrape the URL with Firecrawl
-        print("  → Scraping URL with Firecrawl...")
+        logger.info("  → Scraping URL with Firecrawl...")
         scrape_result = scrape_url_to_markdown(url)
 
         if not scrape_result.get('markdown'):
@@ -199,10 +215,10 @@ def find_first_and_last_sentences_from_url(url: str, use_firecrawl: bool = True)
                 'error': 'No markdown content retrieved from Firecrawl'
             }
 
-        print(f"  → Retrieved {len(scrape_result['markdown'])} characters of markdown")
+        logger.info(f"  → Retrieved {len(scrape_result['markdown'])} characters of markdown")
 
         # Step 2: Extract sentences using OpenAI
-        print("  → Extracting first and last sentences with OpenAI...")
+        logger.info("  → Extracting first and last sentences with OpenAI...")
         sentences = extract_first_and_last_sentences(scrape_result['markdown'])
 
         if not sentences.get('first_sentence') or not sentences.get('last_sentence'):
@@ -213,8 +229,8 @@ def find_first_and_last_sentences_from_url(url: str, use_firecrawl: bool = True)
                 'error': 'OpenAI did not return valid sentences'
             }
 
-        print(f"  ✓ First sentence: {sentences['first_sentence'][:80]}...")
-        print(f"  ✓ Last sentence: {sentences['last_sentence'][:80]}...")
+        logger.info(f"  ✓ First sentence: {sentences['first_sentence'][:80]}...")
+        logger.info(f"  ✓ Last sentence: {sentences['last_sentence'][:80]}...")
 
         return {
             'first_sentence': sentences['first_sentence'],

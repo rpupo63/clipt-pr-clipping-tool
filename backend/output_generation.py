@@ -9,9 +9,14 @@ import re
 from pathlib import Path
 from typing import Optional, Union, Dict, Set
 from bs4 import BeautifulSoup
-import requests
 from io import BytesIO
-from urllib.parse import urlparse, urlunparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Import utilities
+from logger import get_logger
+from url_utils import normalize_image_url
+
+logger = get_logger(__name__)
 
 # Try to import PIL for image processing
 try:
@@ -42,40 +47,6 @@ try:
     MARKDOWN_AVAILABLE = True
 except ImportError:
     MARKDOWN_AVAILABLE = False
-
-
-def _normalize_image_url(url: str) -> str:
-    """
-    Normalize an image URL for duplicate detection.
-    
-    Removes query parameters, fragments, and normalizes the URL to help
-    identify duplicate images that might have different URLs but point to
-    the same image (e.g., with tracking parameters, size parameters, etc.).
-    
-    Args:
-        url: Image URL to normalize
-        
-    Returns:
-        str: Normalized URL (base URL without query params or fragments)
-    """
-    if not url:
-        return url
-    
-    try:
-        parsed = urlparse(url)
-        # Reconstruct URL without query and fragment
-        normalized = urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            '',  # Remove query
-            ''   # Remove fragment
-        ))
-        return normalized
-    except Exception:
-        # If parsing fails, return original
-        return url
 
 
 def _resize_image(image_bytes: bytes, target_width: int) -> tuple:
@@ -143,7 +114,7 @@ def _process_images_in_html(html_content: str, target_width: int = 800) -> str:
     for img in img_tags:
         src = img.get('src', '')
         if src and src.startswith('http'):
-            normalized = _normalize_image_url(src)
+            normalized = normalize_image_url(src)
             if normalized not in normalized_to_original:
                 normalized_to_original[normalized] = []
             normalized_to_original[normalized].append(src)
@@ -151,29 +122,44 @@ def _process_images_in_html(html_content: str, target_width: int = 800) -> str:
             if normalized not in image_url_map:
                 image_url_map[normalized] = src
     
-    # Download and process each unique image
+    # Download and process each unique image in parallel
     processed_images = {}  # Maps normalized URL to (resized_bytes, width, height)
-    
-    for normalized_url, original_url in image_url_map.items():
+
+    def download_and_process_image(normalized_url, original_url):
+        """Helper function to download and process a single image."""
         try:
-            # Download image
             from image_utils import download_image
             image_bytes, width, height = download_image(original_url)
-            
+
             if image_bytes:
                 # Resize to target width
                 resized_bytes, new_width, new_height = _resize_image(image_bytes, target_width)
-                processed_images[normalized_url] = (resized_bytes, new_width, new_height)
-        except Exception:
-            # If download/resize fails, skip this image
-            continue
+                return normalized_url, (resized_bytes, new_width, new_height)
+        except Exception as e:
+            logger.warning(f"Failed to download/process image {original_url}: {e}")
+        return normalized_url, None
+
+    # Use ThreadPoolExecutor for parallel downloads (max 5 concurrent downloads)
+    max_workers = min(5, len(image_url_map)) if image_url_map else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all download tasks
+        future_to_url = {
+            executor.submit(download_and_process_image, norm_url, orig_url): norm_url
+            for norm_url, orig_url in image_url_map.items()
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_url):
+            normalized_url, result = future.result()
+            if result is not None:
+                processed_images[normalized_url] = result
     
     # Replace all image tags with processed versions
     for img in img_tags:
         src = img.get('src', '')
         if src and src.startswith('http'):
-            normalized = _normalize_image_url(src)
-            
+            normalized = normalize_image_url(src)
+
             if normalized in processed_images:
                 resized_bytes, new_width, new_height = processed_images[normalized]
                 
@@ -717,54 +703,52 @@ def main():
     Example usage of the conversion functions
     """
     import sys
-    
+
     html_file = "scraped_page.html"
-    
+
     if not os.path.exists(html_file):
-        print(f"Error: {html_file} not found", file=sys.stderr)
+        logger.error(f"Error: {html_file} not found")
         return
-    
+
     # Read HTML content
     with open(html_file, 'r', encoding='utf-8') as f:
         html_content = f.read()
-    
-    print("Converting HTML to various formats...")
-    
-    # Example using the unified convert_html function
-    print("\nUsing unified convert_html function:")
-    
+
+    logger.info("Converting HTML to various formats...")
+    logger.info("Using unified convert_html function:")
+
     # Convert to DOCX
-    print("\nConverting to DOCX...")
+    logger.info("Converting to DOCX...")
     try:
         docx_content = convert_html(html_content, 'docx')
         docx_file = str(Path(html_file).with_suffix('.docx'))
         with open(docx_file, 'wb') as f:
             f.write(docx_content)
-        print(f"✓ DOCX saved to: {docx_file}")
+        logger.info(f"✓ DOCX saved to: {docx_file}")
     except Exception as e:
-        print(f"✗ Error converting to DOCX: {e}")
-    
+        logger.error(f"✗ Error converting to DOCX: {e}", exc_info=True)
+
     # Convert to PDF
-    print("\nConverting to PDF...")
+    logger.info("Converting to PDF...")
     try:
         pdf_content = convert_html(html_content, 'pdf')
         pdf_file = str(Path(html_file).with_suffix('.pdf'))
         with open(pdf_file, 'wb') as f:
             f.write(pdf_content)
-        print(f"✓ PDF saved to: {pdf_file}")
+        logger.info(f"✓ PDF saved to: {pdf_file}")
     except Exception as e:
-        print(f"✗ Error converting to PDF: {e}")
-    
+        logger.error(f"✗ Error converting to PDF: {e}", exc_info=True)
+
     # Convert to Markdown
-    print("\nConverting to Markdown...")
+    logger.info("Converting to Markdown...")
     try:
         md_content = convert_html(html_content, 'md')
         md_file = str(Path(html_file).with_suffix('.md'))
         with open(md_file, 'w', encoding='utf-8') as f:
             f.write(md_content)
-        print(f"✓ Markdown saved to: {md_file}")
+        logger.info(f"✓ Markdown saved to: {md_file}")
     except Exception as e:
-        print(f"✗ Error converting to Markdown: {e}")
+        logger.error(f"✗ Error converting to Markdown: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,11 @@ import sys
 import os
 import json
 
+# Import utilities
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def extract_logo(html_content: str, root_domain: str, base_url: str = None) -> dict:
     """
@@ -415,59 +420,59 @@ def main():
         url = sys.argv[1]
     else:
         url = "https://www.vogue.com/article/thin-little-scarf-fall-winter-trend"
-        print(f"No URL provided, using default: {url}")
-        print(f"Usage: python {sys.argv[0]} <url>")
-    
-    print("=" * 80)
-    print("Step 1: Scraping webpage with ad-blocker...")
-    print("=" * 80)
-    
+        logger.info(f"No URL provided, using default: {url}")
+        logger.info(f"Usage: python {sys.argv[0]} <url>")
+
+    logger.info("=" * 80)
+    logger.info("Step 1: Scraping webpage with ad-blocker...")
+    logger.info("=" * 80)
+
     # Scrape the page
     html_content = site_preprocessing.scrape_page(url, wait_time=1)
-    
+
     if not html_content:
-        print("Failed to scrape the page", file=sys.stderr)
+        logger.error("Failed to scrape the page")
         sys.exit(1)
-    
+
     # Save HTML to file for reference
     html_file = "scraped_page.html"
     with open(html_file, 'w', encoding='utf-8') as f:
         f.write(html_content)
-    print(f"✓ HTML saved to: {html_file}")
-    
-    print("\n" + "=" * 80)
-    print("Step 2: Extracting root domain from URL...")
-    print("=" * 80)
-    
+    logger.info(f"✓ HTML saved to: {html_file}")
+
+    logger.info("=" * 80)
+    logger.info("Step 2: Extracting root domain from URL...")
+    logger.info("=" * 80)
+
     # Extract root domain from URL
     root_domain = get_root_domain(url)
-    print(f"✓ Root domain: {root_domain}")
-    
-    print("\n" + "=" * 80)
-    print("Step 3: Extracting logo from HTML...")
-    print("=" * 80)
-    
+    logger.info(f"✓ Root domain: {root_domain}")
+
+    logger.info("=" * 80)
+    logger.info("Step 3: Extracting logo from HTML...")
+    logger.info("=" * 80)
+
     # Extract logo (pass base_url to convert relative paths to absolute URLs)
     logo_result = extract_logo(html_content, root_domain, base_url=url)
-    
-    print("\n" + "=" * 80)
-    print("RESULTS:")
-    print("=" * 80)
-    
+
+    logger.info("=" * 80)
+    logger.info("RESULTS:")
+    logger.info("=" * 80)
+
     if logo_result['element']:
-        print("✓ Logo found!")
-        print(f"\n  Logo URL (absolute): {logo_result['url']}")
-        print(f"  Original source: {logo_result['src'] or '(inline SVG)'}")
-        print(f"  Alt text: {logo_result['alt'] or '(none)'}")
-        print(f"  Dimensions: {logo_result['width'] or 'N/A'} x {logo_result['height'] or 'N/A'}")
-        print(f"\n  Element HTML:")
-        print("  " + str(logo_result['element']).replace('\n', '\n  '))
+        logger.info("✓ Logo found!")
+        logger.info(f"  Logo URL (absolute): {logo_result['url']}")
+        logger.info(f"  Original source: {logo_result['src'] or '(inline SVG)'}")
+        logger.info(f"  Alt text: {logo_result['alt'] or '(none)'}")
+        logger.info(f"  Dimensions: {logo_result['width'] or 'N/A'} x {logo_result['height'] or 'N/A'}")
+        logger.info("  Element HTML:")
+        logger.info("  " + str(logo_result['element']).replace('\n', '\n  '))
     else:
-        print("✗ No logo found matching the criteria")
-        print("\n  Criteria checked:")
-        print("  - Has 'logo' in class name, id, or image path")
-        print("  - Is inside a link pointing to root domain")
-        print("  - Is an image file (svg, png, jpg, etc.)")
+        logger.info("✗ No logo found matching the criteria")
+        logger.info("  Criteria checked:")
+        logger.info("  - Has 'logo' in class name, id, or image path")
+        logger.info("  - Is inside a link pointing to root domain")
+        logger.info("  - Is an image file (svg, png, jpg, etc.)")
     
     return logo_result
 

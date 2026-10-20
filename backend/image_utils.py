@@ -10,12 +10,96 @@ import requests
 import re
 from io import BytesIO
 
+# Import utilities
+from constants import ImageConfig, NetworkConfig
+from logger import get_logger
+from network_utils import download_with_size_limit
+
+logger = get_logger(__name__)
+
 # Try to import PIL for getting actual image dimensions
 try:
     from PIL import Image
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+    logger.warning("PIL not available - image dimension detection will be limited")
+
+
+def _get_dimensions_from_headers(image_bytes: bytes) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Fallback method to get image dimensions from image file headers.
+    Used when PIL is not available.
+
+    Supports: JPEG, PNG, GIF, WebP (basic detection)
+
+    Args:
+        image_bytes: Raw image data
+
+    Returns:
+        tuple: (width, height) or (None, None) if unable to determine
+    """
+    if not image_bytes or len(image_bytes) < 24:
+        return None, None
+
+    # Check PNG signature
+    if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        # PNG: width and height are at bytes 16-23
+        if len(image_bytes) >= 24:
+            width = int.from_bytes(image_bytes[16:20], 'big')
+            height = int.from_bytes(image_bytes[20:24], 'big')
+            return width, height
+
+    # Check JPEG signature
+    elif image_bytes[:2] == b'\xff\xd8':
+        # JPEG: more complex, requires parsing segments
+        # Simplified approach - look for SOF marker
+        try:
+            i = 2
+            while i < len(image_bytes) - 10:
+                if image_bytes[i] == 0xff:
+                    marker = image_bytes[i + 1]
+                    # SOF markers: 0xC0-0xC3, 0xC5-0xC7, 0xC9-0xCB, 0xCD-0xCF
+                    if marker in (0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+                                  0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf):
+                        # Height at i+5, width at i+7
+                        height = int.from_bytes(image_bytes[i+5:i+7], 'big')
+                        width = int.from_bytes(image_bytes[i+7:i+9], 'big')
+                        return width, height
+                    # Skip to next segment
+                    length = int.from_bytes(image_bytes[i+2:i+4], 'big')
+                    i += 2 + length
+                else:
+                    i += 1
+        except Exception:
+            pass
+
+    # Check GIF signature
+    elif image_bytes[:6] in (b'GIF87a', b'GIF89a'):
+        # GIF: width at bytes 6-7, height at 8-9 (little-endian)
+        if len(image_bytes) >= 10:
+            width = int.from_bytes(image_bytes[6:8], 'little')
+            height = int.from_bytes(image_bytes[8:10], 'little')
+            return width, height
+
+    # Check WebP signature
+    elif image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+        # WebP: more complex, requires parsing chunks
+        # Simplified for VP8/VP8L
+        if len(image_bytes) >= 30:
+            if image_bytes[12:16] == b'VP8 ':
+                # Lossy WebP
+                width = int.from_bytes(image_bytes[26:28], 'little') & 0x3fff
+                height = int.from_bytes(image_bytes[28:30], 'little') & 0x3fff
+                return width, height
+            elif image_bytes[12:16] == b'VP8L':
+                # Lossless WebP
+                bits = int.from_bytes(image_bytes[21:25], 'little')
+                width = (bits & 0x3fff) + 1
+                height = ((bits >> 14) & 0x3fff) + 1
+                return width, height
+
+    return None, None
 
 
 def parse_srcset(srcset_str: str) -> List[Tuple[str, Optional[float]]]:
@@ -34,14 +118,23 @@ def parse_srcset(srcset_str: str) -> List[Tuple[str, Optional[float]]]:
     """
     if not srcset_str:
         return []
-    
+
+    # SECURITY: Limit srcset length to prevent DoS
+    if len(srcset_str) > NetworkConfig.MAX_SRCSET_LENGTH:
+        logger.warning(f"Srcset too long: {len(srcset_str)} chars, truncating")
+        srcset_str = srcset_str[:NetworkConfig.MAX_SRCSET_LENGTH]
+
     sources = []
     # Split by comma, but be careful of commas in URLs
     parts = []
     current_part = ''
     in_parens = False
-    
-    for char in srcset_str:
+
+    for i, char in enumerate(srcset_str):
+        # Safety check: prevent infinite processing
+        if i > NetworkConfig.MAX_SRCSET_LENGTH:
+            logger.warning("Srcset parsing exceeded max length")
+            break
         if char == '(':
             in_parens = True
             current_part += char
@@ -121,46 +214,56 @@ def get_best_image_from_srcset(srcset_str: str, base_url: Optional[str] = None) 
 
 def download_image(url: str) -> Tuple[Optional[bytes], Optional[int], Optional[int]]:
     """
-    Download image and get its dimensions.
-    
+    Download image and get its dimensions (with memory safety).
+
     This is a shared utility function to avoid redundant downloads.
     Can be used by other modules to download images and get dimensions in one call.
-    
+
+    SECURITY: Uses size-limited download to prevent memory exhaustion.
+
     Args:
         url: Image URL
-        
+
     Returns:
         tuple: (image_bytes, width, height) or (None, None, None) if unable to fetch
                image_bytes can be used to avoid re-downloading later
     """
     if not url:
         return None, None, None
-    
+
     try:
-        # Download image
-        response = requests.get(url, timeout=10, stream=True)
-        response.raise_for_status()
-        
-        # Check content type
-        content_type = response.headers.get('content-type', '').lower()
-        if not content_type.startswith('image/'):
-            return None, None, None
-        
-        image_bytes = response.content
+        # SECURITY: Download image with size limit to prevent memory exhaustion
+        image_bytes = download_with_size_limit(
+            url,
+            max_size=ImageConfig.MAX_SIZE,
+            timeout=ImageConfig.TIMEOUT
+        )
+
         width, height = None, None
-        
+
         # Get dimensions using PIL if available
         if PIL_AVAILABLE:
             try:
                 img_data = BytesIO(image_bytes)
                 with Image.open(img_data) as img:
                     width, height = img.size  # Returns (width, height)
-            except Exception:
-                pass
-        
+                    logger.debug(f"Downloaded image: {url} ({width}x{height})")
+            except Exception as e:
+                logger.warning(f"Could not get image dimensions for {url}: {e}")
+        else:
+            # PIL not available - try to extract dimensions from bytes
+            width, height = _get_dimensions_from_headers(image_bytes)
+            logger.debug(f"Downloaded image: {url} (dimensions via headers)")
+
         return image_bytes, width, height
-    except Exception:
-        # If anything fails, return None
+
+    except ValueError as e:
+        # Size limit exceeded
+        logger.error(f"Image too large: {url} - {e}")
+        return None, None, None
+    except Exception as e:
+        # If anything else fails, return None
+        logger.warning(f"Failed to download image {url}: {e}")
         return None, None, None
 
 
@@ -360,4 +463,6 @@ def extract_image_info(img_element, base_url: Optional[str] = None, fetch_dimens
         result['content'] = image_content
     
     return result
+
+
 

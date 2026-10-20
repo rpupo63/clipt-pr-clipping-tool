@@ -6,8 +6,13 @@ Exposes the URL processing logic as a REST API endpoint.
 
 from flask import Flask, request, jsonify, send_file
 import os
+import sys
 import traceback
 from clipping_logic import process_url_to_file
+
+# Import utilities
+from config import Config
+from logger import get_logger
 
 # Try to import CORS, but continue if not available
 try:
@@ -16,11 +21,30 @@ try:
 except ImportError:
     cors_available = False
 
+# Set up logging
+logger = get_logger(__name__)
+
+# SECURITY: Validate configuration at startup
+try:
+    # Validate configuration (optional keys)
+    # Set strict=True if you want to require all API keys at startup
+    Config.validate(strict=False)
+    logger.info("Configuration validated successfully")
+except EnvironmentError as e:
+    logger.error(f"Configuration validation failed: {e}")
+    logger.error("Application may have limited functionality")
+    # Don't exit - allow app to run with degraded functionality
+    # If you want strict validation, uncomment the next line:
+    # sys.exit(1)
+
 app = Flask(__name__)
 
 # Enable CORS if available (useful for frontend integration)
 if cors_available:
     CORS(app)
+    logger.info("CORS enabled")
+else:
+    logger.warning("CORS not available - install flask-cors for frontend integration")
 
 @app.route('/api/process', methods=['POST'])
 def process():
@@ -117,14 +141,16 @@ def process():
         }), 200
 
     except Exception as e:
-        # Return detailed error information
+        # SECURITY: Log full error server-side, send generic message to client
         error_trace = traceback.format_exc()
-        print(f"Error processing request: {error_trace}")
+        logger.error(f"Error processing request: {error_trace}")
 
+        # Don't expose internal details to client in production
+        # Only send generic error message
         return jsonify({
             'success': False,
-            'error': str(e),
-            'traceback': error_trace
+            'error': 'An error occurred processing your request. Please check your input and try again.',
+            'error_type': type(e).__name__  # Only expose error type, not details
         }), 500
 
 
